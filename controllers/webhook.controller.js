@@ -367,6 +367,38 @@ function getPrompt(field) {
     return prompts[field];
 }
 
+function isValidDateStrict(input) {
+    // Try natural language dates like "January 15, 2022"
+    const natural = Date.parse(input);
+    if (!isNaN(natural)) {
+        const d = new Date(natural);
+        const parts = input.match(/\d+/g);
+        if (!parts) return false;
+
+        // Year length should be 4 digits
+        const year = d.getFullYear();
+        if (year < 1900 || year > 2100) return false;
+
+        return true;
+    }
+
+    // Match formats like 15/01/2022 or 15-01-2022
+    const regex = /^([0-2][0-9]|3[0-1])[\/\-](0[1-9]|1[0-2])[\/\-](\d{4})$/;
+    if (regex.test(input)) {
+        const [day, month, year] = input.split(/\/|-/).map(Number);
+        const date = new Date(year, month - 1, day);
+
+        return (
+            date.getFullYear() === year &&
+            date.getMonth() === month - 1 &&
+            date.getDate() === day
+        );
+    }
+
+    return false;
+}
+
+
 function validateField(field, value) {
     if (field === "phone") {
         const regex = /^[6-9]\d{9}$/;
@@ -384,8 +416,11 @@ function validateField(field, value) {
     }
 
     if (field === "date") {
-        if (isNaN(Date.parse(value))) return "❌ Invalid date. Enter a valid date.";
+        if (!isValidDateStrict(value)) {
+            return "❌ Invalid date. Enter a valid date (e.g., 15/01/2022 or January 15, 2022).";
+        }
     }
+
 
     return null;
 }
