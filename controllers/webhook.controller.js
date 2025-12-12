@@ -7,7 +7,7 @@ import fs from "fs";
 
 dotenv.config();
 
-const sessions = {}; // <-- STORE USER STATES HERE
+const sessions = {}; // <-- USER SESSIONS STORAGE
 
 export default {
     verify: (req, res) => {
@@ -31,12 +31,13 @@ export default {
             const from = msgObj.from;
             const type = msgObj.type;
 
-            // initialize session
+            // Initialize session if missing
             if (!sessions[from]) {
                 sessions[from] = {
                     state: "AWAITING_IMAGE",
                     receipt: {},
                     editField: null,
+                    fieldsQueue: [],      // NEW: multiple field editing
                 };
             }
 
@@ -48,12 +49,11 @@ export default {
             if (type === "text") {
                 const text = msgObj.text.body.trim();
 
-                // If expecting confirmation after receipt
+                // CONFIRMATION SCREEN
                 if (session.state === "AWAITING_CONFIRMATION") {
                     if (text === "1") {
                         await sendWhatsAppReply(from, "Successfully submitted your invoice.");
-                        session.state = "AWAITING_IMAGE";
-                        session.receipt = {};
+                        sessions[from] = { state: "AWAITING_IMAGE", receipt: {}, editField: null, fieldsQueue: [] };
                         return res.sendStatus(200);
                     }
 
@@ -62,22 +62,26 @@ export default {
 
                         await sendWhatsAppReply(
                             from,
-                            `Press 1 to edit Name
-Press 2 to edit Phone
-Press 3 to edit Email
-Press 4 to edit Amount
-Press 5 to edit Date`
+                            `Which field do you want to edit?
+1️⃣ Name
+2️⃣ Phone
+3️⃣ Email
+4️⃣ Amount
+5️⃣ Date
+6️⃣ Finish Editing
+7️⃣ Edit multiple fields`
                         );
-
                         return res.sendStatus(200);
                     }
 
-                    await sendWhatsAppReply(from, "Please press 1 or 2.");
+                    await sendWhatsAppReply(from, "Please press 1 to submit or 2 to edit.");
                     return res.sendStatus(200);
                 }
 
-                // EDIT FIELD SELECTION
-                if (session.state === "AWAITING_EDIT_FIELD") {
+                // MULTI-FIELD SELECTION ENTRY
+                if (session.state === "AWAITING_MULTI_FIELD_SELECTION") {
+                    const numbers = text.split(",").map(n => n.trim());
+
                     const map = {
                         "1": "name",
                         "2": "phone",
@@ -86,52 +90,95 @@ Press 5 to edit Date`
                         "5": "date",
                     };
 
-                    if (!map[text]) {
-                        await sendWhatsAppReply(from, "Invalid option. Choose 1–5.");
+                    const fields = [];
+
+                    for (let n of numbers) {
+                        if (map[n]) fields.push(map[n]);
+                    }
+
+                    if (fields.length === 0) {
+                        await sendWhatsAppReply(from, "Invalid selection. Please enter numbers like 1,3,5");
                         return res.sendStatus(200);
                     }
 
-                    session.editField = map[text];
-                    session.state = "AWAITING_NEW_VALUE";
-
-                    // dynamic prompts
-                    const fieldPrompts = {
-                        name: "Please enter the new *name*:",
-                        phone: "Please enter the new *phone number*:",
-                        email: "Please enter the new *email*:",
-                        amount: "Please enter the new *amount*:",
-                        date: "Please enter the new *date*:",
-                    };
-
-                    await sendWhatsAppReply(from, fieldPrompts[session.editField]);
-                    return res.sendStatus(200);
-                }
-
-                // USER ENTERS NEW VALUE FOR THE FIELD
-                if (session.state === "AWAITING_NEW_VALUE") {
-                    if (!session.editField) {
-                        // fallback - shouldn't happen but be safe
-                        session.state = "AWAITING_CONFIRMATION";
-                        await sendWhatsAppReply(from, "No field selected. Please press 2 to edit again.");
-                        return res.sendStatus(200);
-                    }
-
-                    session.receipt[session.editField] = text;
-                    session.state = "AWAITING_CONFIRMATION";
-                    session.editField = null;
-
-                    await sendWhatsAppReply(from, "Value updated successfully.");
-
-                    const updated = session.receipt;
+                    session.fieldsQueue = fields;
+                    session.state = "AWAITING_MULTI_FIELD_VALUES";
 
                     await sendWhatsAppReply(
                         from,
-                        `
-👤 Name: ${updated.name || "Not found"}
-📞 Phone: ${updated.phone || "Not found"}
-✉️ Email: ${updated.email || "Not found"}
-💰 Amount: ${updated.amount || "Not found"}
-📅 Date: ${updated.date || "Not found"}`
+                        `You selected: ${fields.join(", ")}
+
+Please enter the new values in the same order, separated by commas.
+
+Example:
+newName,newPhone,newEmail`
+                    );
+
+                    return res.sendStatus(200);
+                }
+
+                // MULTI-FIELD VALUE HANDLING
+                if (session.state === "AWAITING_MULTI_FIELD_VALUES") {
+                    const values = text.split(",").map(v => v.trim());
+
+                    if (values.length !== session.fieldsQueue.length) {
+                        await sendWhatsAppReply(
+                            from,
+                            `❌ You must enter exactly ${session.fieldsQueue.length} values.
+
+Please enter them again, separated by commas.`
+                        );
+                        return res.sendStatus(200);
+                    }
+
+                    let errors = [];
+                    let fields = session.fieldsQueue;
+
+                    // Validate each field
+                    for (let i = 0; i < fields.length; i++) {
+                        const field = fields[i];
+                        const value = values[i];
+
+                        const error = validateField(field, value);
+
+                        if (error) {
+                            errors.push({ field, message: error });
+                        }
+                    }
+
+                    // If any validation errors → show ALL in one message
+                    if (errors.length > 0) {
+                        let errorMessage = "❌ Some fields are invalid:\n\n";
+
+                        errors.forEach(err => {
+                            errorMessage += `• *${err.field}* → ${err.message}\n`;
+                        });
+
+                        errorMessage += `\nPlease re-enter ALL values again in the same order:\n${fields.join(", ")}`;
+
+                        await sendWhatsAppReply(from, errorMessage);
+                        return res.sendStatus(200);
+                    }
+
+                    // All good → save all values
+                    for (let i = 0; i < fields.length; i++) {
+                        session.receipt[fields[i]] = values[i];
+                    }
+
+                    session.state = "AWAITING_CONFIRMATION";
+                    session.fieldsQueue = [];
+
+                    const r = session.receipt;
+
+                    await sendWhatsAppReply(
+                        from,
+                        `✔️ Updated Values:
+
+👤 Name: ${r.name || "Not found"}
+📞 Phone: ${r.phone || "Not found"}
+✉️ Email: ${r.email || "Not found"}
+💰 Amount: ${r.amount || "Not found"}
+📅 Date: ${r.date || "Not found"}`
                     );
 
                     await sendWhatsAppReply(
@@ -142,11 +189,96 @@ Press 5 to edit Date`
                     return res.sendStatus(200);
                 }
 
-                // DEFAULT → Ask user to upload bill
-                await sendWhatsAppReply(
-                    from,
-                    "Hello, please upload your bill to get processed with STT."
-                );
+
+                // EDIT FIELD SELECTION (SINGLE MODE)
+                if (session.state === "AWAITING_EDIT_FIELD") {
+                    const map = {
+                        "1": "name",
+                        "2": "phone",
+                        "3": "email",
+                        "4": "amount",
+                        "5": "date",
+                        "6": "finish",
+                        "7": "multi", // NEW
+                    };
+
+                    if (!map[text]) {
+                        await sendWhatsAppReply(from, "Invalid option. Choose 1–7.");
+                        return res.sendStatus(200);
+                    }
+
+                    // MULTI-FIELD ACTIVATE
+                    if (map[text] === "multi") {
+                        session.state = "AWAITING_MULTI_FIELD_SELECTION";
+                        await sendWhatsAppReply(
+                            from,
+                            `Enter the field numbers you want to edit (comma separated):
+Example: 1,2,3`
+                        );
+                        return res.sendStatus(200);
+                    }
+
+                    // finish edit
+                    if (map[text] === "finish") {
+                        session.state = "AWAITING_CONFIRMATION";
+                        const r = session.receipt;
+
+                        await sendWhatsAppReply(
+                            from,
+                            `
+👤 Name: ${r.name || "Not found"}
+📞 Phone: ${r.phone || "Not found"}
+✉️ Email: ${r.email || "Not found"}
+💰 Amount: ${r.amount || "Not found"}
+📅 Date: ${r.date || "Not found"}`
+                        );
+
+                        await sendWhatsAppReply(from, "Press 1 to submit or 2 to edit.");
+                        return res.sendStatus(200);
+                    }
+
+                    // choose single field
+                    session.editField = map[text];
+                    session.state = "AWAITING_NEW_VALUE";
+
+                    await sendWhatsAppReply(from, getPrompt(session.editField));
+                    return res.sendStatus(200);
+                }
+
+                // SINGLE FIELD VALUE HANDLING
+                if (session.state === "AWAITING_NEW_VALUE") {
+                    let value = text;
+
+                    const validationError = validateField(session.editField, value);
+                    if (validationError) {
+                        await sendWhatsAppReply(from, validationError);
+                        return res.sendStatus(200);
+                    }
+
+                    session.receipt[session.editField] = value;
+
+                    session.state = "AWAITING_EDIT_FIELD";
+                    session.editField = null;
+
+                    await sendWhatsAppReply(from, "✅ Value updated.");
+
+                    await sendWhatsAppReply(
+                        from,
+                        `Which field do you want to edit next?
+1️⃣ Name
+2️⃣ Phone
+3️⃣ Email
+4️⃣ Amount
+5️⃣ Date
+6️⃣ Finish Editing
+7️⃣ Edit multiple fields`
+                    );
+
+                    return res.sendStatus(200);
+                }
+
+                // DEFAULT
+                await sendWhatsAppReply(from, "Hello, please upload your bill to get processed with STT.");
                 return res.sendStatus(200);
             }
 
@@ -159,52 +291,42 @@ Press 5 to edit Date`
                 const mediaUrl = await getMediaUrl(mediaId);
                 const localPath = await downloadImage(mediaUrl, mediaId);
 
-                // ensure localPath exists before parsing
                 let receipt = { name: "", phone: "", email: "", amount: "", date: "" };
+
                 try {
                     receipt = await parseReceiptFields(localPath);
                 } catch (e) {
-                    console.error("Error parsing receipt fields:", e);
+                    console.error("OCR error:", e);
                 }
 
-                // delete temp file (best-effort; ensure we always remove file)
+                // Delete temp image
                 try {
-                    if (localPath && fs.existsSync(localPath)) {
-                        fs.unlinkSync(localPath);
-                    }
+                    if (fs.existsSync(localPath)) fs.unlinkSync(localPath);
                 } catch (e) {
-                    console.error("Error deleting temp file:", e);
+                    console.error("Delete error:", e);
                 }
 
-                // NORMALIZE fields to strings (avoid crashes)
-                const name = (receipt.name || "").toString().trim();
-                const phone = (receipt.phone || "").toString().trim();
-                const email = (receipt.email || "").toString().trim();
-                const amount = (receipt.amount || "").toString().trim();
-                const date = (receipt.date || "").toString().trim();
+                const name = (receipt.name || "").trim();
+                const phone = (receipt.phone || "").trim();
+                const email = (receipt.email || "").trim();
+                const amount = (receipt.amount || "").trim();
+                const date = (receipt.date || "").trim();
 
-                // ACCEPT ONLY IF AT LEAST ONE FIELD IS FOUND
-                const hasAnyField = !!(name || phone || email || amount || date);
+                const hasAny = !!(name || phone || email || amount || date);
 
-                if (!hasAnyField) {
-                    // If nothing is extracted, reject and ask for clearer photo
+                if (!hasAny) {
                     await sendWhatsAppReply(
                         from,
-                        `❌ *Receipt Rejected*\nNo readable fields were found (name, phone, email, amount, date).\n\nPlease send a clearer photo of the bill or try a different angle.`
+                        `❌ *Receipt Rejected*
+No readable fields detected.
+Please upload a clearer image.`
                     );
-
-                    // keep the session state as AWAITING_IMAGE (so user can send again)
                     session.state = "AWAITING_IMAGE";
-                    session.receipt = {};
-                    session.editField = null;
-
                     return res.sendStatus(200);
                 }
 
-                // If we have at least one field, store and show the parsed receipt
                 session.receipt = { name, phone, email, amount, date };
                 session.state = "AWAITING_CONFIRMATION";
-                session.editField = null;
 
                 await sendWhatsAppReply(
                     from,
@@ -216,21 +338,57 @@ Press 5 to edit Date`
 📅 Date: ${date || "Not found"}`
                 );
 
-                await sendWhatsAppReply(
-                    from,
-                    "Please confirm if the details are correct.\nPress 1 to submit or 2 to edit."
-                );
+                await sendWhatsAppReply(from, "Press 1 to submit or 2 to edit.");
 
                 return res.sendStatus(200);
             }
 
             return res.sendStatus(200);
         } catch (err) {
-            console.error(err);
+            console.error("Webhook error:", err);
             return res.sendStatus(500);
         }
     },
 };
+
+
+
+// --------------------
+// HELPER FUNCTIONS
+// --------------------
+function getPrompt(field) {
+    const prompts = {
+        name: "Please enter the new *name*:",
+        phone: "Please enter the new *phone number* (10 digits):",
+        email: "Please enter the new *email*:",
+        amount: "Please enter the new *amount* (e.g., 165 or 165.50):",
+        date: "Please enter the new *date* (e.g., 15/01/2022 or January 15, 2022):",
+    };
+    return prompts[field];
+}
+
+function validateField(field, value) {
+    if (field === "phone") {
+        const regex = /^\d{10}$/;
+        if (!regex.test(value)) return "❌ Invalid phone number. Must be 10 digits.";
+    }
+
+    if (field === "email") {
+        const regex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!regex.test(value)) return "❌ Invalid email. Enter a valid email address.";
+    }
+
+    if (field === "amount") {
+        const regex = /^\d+(\.\d{1,2})?$/;
+        if (!regex.test(value)) return "❌ Invalid amount. Enter a number like 165 or 165.50.";
+    }
+
+    if (field === "date") {
+        if (isNaN(Date.parse(value))) return "❌ Invalid date. Enter a valid date.";
+    }
+
+    return null;
+}
 
 
 //  using twillio
