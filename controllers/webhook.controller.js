@@ -359,7 +359,7 @@ Please upload a clearer image.`
 function getPrompt(field) {
     const prompts = {
         name: "Please enter the new *name*:",
-        phone: "Please enter the new *phone number* (10 digits):",
+        phone: "Please enter the new *phone number* (10 digits starting with 6–9):",
         email: "Please enter the new *email*:",
         amount: "Please enter the new *amount* (e.g., 165 or 165.50):",
         date: "Please enter the new *date* (e.g., 15/01/2022 or January 15, 2022):",
@@ -369,8 +369,8 @@ function getPrompt(field) {
 
 function validateField(field, value) {
     if (field === "phone") {
-        const regex = /^\d{10}$/;
-        if (!regex.test(value)) return "❌ Invalid phone number. Must be 10 digits.";
+        const regex = /^[6-9]\d{9}$/;
+        if (!regex.test(value)) return "❌ Invalid phone number. Must be 10 digits starting with 6–9.";
     }
 
     if (field === "email") {
