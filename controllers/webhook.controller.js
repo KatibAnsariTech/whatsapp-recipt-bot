@@ -368,26 +368,70 @@ function getPrompt(field) {
 }
 
 function isValidDateStrict(input) {
-    // Try natural language dates like "January 15, 2022"
-    const natural = Date.parse(input);
-    if (!isNaN(natural)) {
-        const d = new Date(natural);
-        const parts = input.match(/\d+/g);
+    let normalized = input.trim();
+
+    // Try parsing natural language dates ("January 15, 2025")
+    let parsed = Date.parse(normalized);
+    if (!isNaN(parsed)) {
+        const d = new Date(parsed);
+
+        // Extract numbers from input
+        const parts = normalized.match(/\d+/g);
         if (!parts) return false;
 
-        // Year length should be 4 digits
-        const year = d.getFullYear();
+        let year = d.getFullYear();
+        let month = d.getMonth() + 1;  // JS months start at 0
+        let day = d.getDate();
+
+        // Reject years not in reasonable range
         if (year < 1900 || year > 2100) return false;
 
+        // Now verify by reconstructing the same date from input
+        // Convert input month string to number if needed
+        // Check if user intended February 30 etc.
+
+        // Check formats like "February 30, 2025"
+        const regexNatural = /([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})/;
+        const matchNatural = normalized.match(regexNatural);
+
+        if (matchNatural) {
+            const intendedDay = Number(matchNatural[2]);
+            const intendedYear = Number(matchNatural[3]);
+            const intendedMonthName = matchNatural[1].toLowerCase();
+
+            const monthNames = {
+                january: 1, february: 2, march: 3, april: 4,
+                may: 5, june: 6, july: 7, august: 8,
+                september: 9, october: 10, november: 11, december: 12
+            };
+
+            const intendedMonth = monthNames[intendedMonthName];
+
+            // Compare parsed result with intended input
+            if (intendedYear !== year || intendedMonth !== month || intendedDay !== day) {
+                return false;  // JS corrected the date → invalid
+            }
+
+            return true; // Valid natural format
+        }
+
+        // Otherwise allow fallback only if year >1900 and <=2100
         return true;
     }
 
-    // Match formats like 15/01/2022 or 15-01-2022
-    const regex = /^([0-2][0-9]|3[0-1])[\/\-](0[1-9]|1[0-2])[\/\-](\d{4})$/;
-    if (regex.test(input)) {
-        const [day, month, year] = input.split(/\/|-/).map(Number);
+    // Handle DD/MM/YYYY or DD-MM-YYYY
+    const regexDMY = /^([0-2][0-9]|3[0-1])[\/\-](0[1-9]|1[0-2])[\/\-](\d{4})$/;
+    if (regexDMY.test(normalized)) {
+        const [dayStr, monStr, yearStr] = normalized.split(/\/|-/);
+        const day = Number(dayStr);
+        const month = Number(monStr);
+        const year = Number(yearStr);
+
+        if (year < 1900 || year > 2100) return false;
+
         const date = new Date(year, month - 1, day);
 
+        // Verify correctness
         return (
             date.getFullYear() === year &&
             date.getMonth() === month - 1 &&
@@ -395,8 +439,9 @@ function isValidDateStrict(input) {
         );
     }
 
-    return false;
+    return false; // No matching format
 }
+
 
 
 function validateField(field, value) {
