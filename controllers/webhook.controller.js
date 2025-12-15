@@ -52,10 +52,32 @@ export default {
                 // CONFIRMATION SCREEN
                 if (session.state === "AWAITING_CONFIRMATION") {
                     if (text === "1") {
+                        if (!session.receipt.amount) {
+                            await sendWhatsAppReply(
+                                from,
+                                "❌ Amount is mandatory.\nPlease edit and enter the amount before submitting."
+                            );
+
+                            session.state = "AWAITING_EDIT_FIELD";
+
+                            await sendWhatsAppReply(
+                                from,
+                                `Which field do you want to edit?
+1️⃣ Name
+2️⃣ Phone
+3️⃣ Email
+4️⃣ Amount
+5️⃣ Date`
+                            );
+
+                            return res.sendStatus(200);
+                        }
+
                         await sendWhatsAppReply(from, "Successfully submitted your invoice.");
                         sessions[from] = { state: "AWAITING_IMAGE", receipt: {}, editField: null, fieldsQueue: [] };
                         return res.sendStatus(200);
                     }
+
 
                     if (text === "2") {
                         session.state = "AWAITING_EDIT_FIELD";
@@ -118,6 +140,7 @@ newName,newPhone,newEmail`
                 }
 
                 // MULTI-FIELD VALUE HANDLING
+                // MULTI-FIELD VALUE HANDLING
                 if (session.state === "AWAITING_MULTI_FIELD_VALUES") {
                     const values = text.split(",").map(v => v.trim());
 
@@ -140,27 +163,36 @@ Please enter them again, separated by commas.`
                         const value = values[i];
 
                         const error = validateField(field, value);
-
                         if (error) {
                             errors.push({ field, message: error });
                         }
                     }
 
-                    // If any validation errors → show ALL in one message
+                    // ❌ If validation errors
                     if (errors.length > 0) {
                         let errorMessage = "❌ Some fields are invalid:\n\n";
-
                         errors.forEach(err => {
                             errorMessage += `• *${err.field}* → ${err.message}\n`;
                         });
 
                         errorMessage += `\nPlease re-enter ALL values again in the same order:\n${fields.join(", ")}`;
-
                         await sendWhatsAppReply(from, errorMessage);
                         return res.sendStatus(200);
                     }
 
-                    // All good → save all values
+                    // ADD THIS BLOCK RIGHT HERE
+                    if (!session.receipt.amount && !fields.includes("amount")) {
+                        await sendWhatsAppReply(
+                            from,
+                            "⚠️ Amount is required.\nPlease include amount in the fields to edit."
+                        );
+                        session.state = "AWAITING_EDIT_FIELD";
+                        session.fieldsQueue = [];
+                        return res.sendStatus(200);
+                    }
+                    // END ADD
+
+                    // ✅ Save all values
                     for (let i = 0; i < fields.length; i++) {
                         session.receipt[fields[i]] = values[i];
                     }
@@ -220,6 +252,14 @@ Example: 1,2,3`
 
                     // finish edit
                     if (map[text] === "finish") {
+                        if (!session.receipt.amount) {
+                            await sendWhatsAppReply(
+                                from,
+                                "⚠️ Amount is required.\nPlease enter the amount before finishing."
+                            );
+                            return res.sendStatus(200);
+                        }
+
                         session.state = "AWAITING_CONFIRMATION";
                         const r = session.receipt;
 
@@ -236,6 +276,7 @@ Example: 1,2,3`
                         await sendWhatsAppReply(from, "Press 1 to submit or 2 to edit.");
                         return res.sendStatus(200);
                     }
+
 
                     // choose single field
                     session.editField = map[text];
@@ -325,12 +366,15 @@ Please upload a clearer image.`
                     return res.sendStatus(200);
                 }
 
+                // Accept receipt even if amount is missing
                 session.receipt = { name, phone, email, amount, date };
                 session.state = "AWAITING_CONFIRMATION";
 
                 await sendWhatsAppReply(
                     from,
                     `
+✔️ Receipt Accepted
+
 👤 Name: ${name || "Not found"}
 📞 Phone: ${phone || "Not found"}
 ✉️ Email: ${email || "Not found"}
@@ -338,7 +382,21 @@ Please upload a clearer image.`
 📅 Date: ${date || "Not found"}`
                 );
 
-                await sendWhatsAppReply(from, "Press 1 to submit or 2 to edit.");
+                // ⚠️ If amount missing, force edit
+                if (!amount) {
+                    await sendWhatsAppReply(
+                        from,
+                        `⚠️ *Amount is required to proceed.*
+
+Please edit and enter the amount.
+Press 2 to edit.`
+                    );
+                } else {
+                    await sendWhatsAppReply(
+                        from,
+                        "Press 1 to submit or 2 to edit."
+                    );
+                }
 
                 return res.sendStatus(200);
             }
